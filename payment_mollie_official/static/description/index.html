@@ -226,7 +226,68 @@
 
 <div class="card mx-auto w-md-75">
     <div class="card-header bg-200">
-        <h4 class="m-0">v13.0.1.3</h4>
+        <h4 class="m-0">v14.0.0.7</h4>
+    </div>
+    <div class="card-body">
+        <div> <b class="text-danger"> FIX </b> Fixed issue of Order API when using it with fees. </div>
+    </div>
+</div>
+
+<div class="card mx-auto w-md-75">
+    <div class="card-header bg-200">
+        <h4 class="m-0">v14.0.0.6</h4>
+    </div>
+    <div class="card-body">
+        <div> <b class="text-success"> NEW </b> Added feature to extra fees(surcharge). </div>
+        <div> <b class="text-success"> NEW </b> Added support of Apple Pay for supported devices. </div>
+        <div> <b class="text-success"> NEW </b> Make mollie payments method translatable also sync translation from mollie. </div>
+        <div> <b class="text-success"> NEW </b> Filter non supported payment methods during check out (based on amount, currency and billing country). </div>
+        <div> <b class="text-warning"> UPDATE </b> Select first payment method by default when mollie method is first. </div>
+        <div> <b class="text-danger"> FIX </b> Fixed SEPA payment module view conflict. </div>
+        <div> <b class="text-danger"> FIX </b> Minor bug fixes. </div>
+    </div>
+</div>
+
+<div class="card mx-auto w-md-75">
+    <div class="card-header bg-200">
+        <h4 class="m-0">v14.0.0.5</h4>
+    </div>
+    <div class="card-body">
+        <div> <b class="text-success"> NEW </b> Option to hide the payment methods based on country. </div>
+        <div> <b class="text-warning"> UPDATE </b> Send extra metadata for shipment API. </div>
+        <div> <b class="text-danger"> FIX </b> Increase the timeout request (due to python SDK change). </div>
+        <div> <b class="text-danger"> FIX </b> Minor bug fixes. </div>
+    </div>
+</div>
+
+<div class="card mx-auto w-md-75">
+    <div class="card-header bg-200">
+        <h4 class="m-0">v14.0.0.4</h4>
+    </div>
+    <div class="card-body">
+        <div> <b class="text-warning"> UPDATE </b> Set default amount in the refund dialog. </div>
+        <div> <b class="text-warning"> UPDATE </b> Show only payment api type methods for payment links. </div>
+        <div> <b class="text-danger"> FIX </b> Minor bug fixes. </div>
+    </div>
+</div>
+<div class="card mx-auto w-md-75">
+    <div class="card-header bg-200">
+        <h4 class="m-0">v14.0.0.3</h4>
+    </div>
+    <div class="card-body">
+        <div> <b class="text-success"> NEW </b> Added vouchers support. </div>
+        <div> <b class="text-success"> NEW </b> Configure vouchers categories at products and product categories. </div>
+        <div> <b class="text-success"> NEW </b> Manage mollie refunds via credit notes. </div>
+        <div> <b class="text-success"> NEW </b> Restrict user from over refund. </div>
+        <div> <b class="text-warning"> UPDATE </b> Better management of API fallbacks. </div>
+        <div> <b class="text-danger"> FIX </b> Deactivate inghomepay option. </div>
+        <div> <b class="text-danger"> FIX </b> Hide the credit card option if profile is not configured. </div>
+        <div> <b class="text-danger"> FIX </b> Fixed wrong currency field for invoice. </div>
+    </div>
+</div>
+<div class="card mx-auto w-md-75">
+    <div class="card-header bg-200">
+        <h4 class="m-0">v14.0.0.2</h4>
     </div>
     <div class="card-body">
         <div> <b class="text-success"> NEW </b> Added option to manually post process transactions. </div>
@@ -234,25 +295,32 @@
         <div> <b class="text-danger"> FIX </b> Handle multiple webhook calls for delayed responses. </div>
     </div>
 </div>
-
 <div class="card mx-auto w-md-75">
     <div class="card-header bg-200">
-        <h4 class="m-0">v13.0.1.2</h4>
+        <h4 class="m-0">v14.0.0.1</h4>
     </div>
     <div class="card-body">
-        <div> <b class="text-success"> NEW </b> Added support to refund the payment via credit notes </div>
+        <div> <b class="text-success"> NEW </b> Migrated module from v13 to v14.  </div>
     </div>
 </div>
 
-<div class="card mx-auto w-md-75">
-    <div class="card-header bg-200">
-        <h4 class="m-0">v13.0.1.1</h4>
+<div class="row mt-5 border text-center">
+    <div class="col-md-4 py-3" style="background-color: #0077ff;color: white;">
+        <h4 style="color: white;" class="mb-0"> Developed by <b>Applix</b></h4>
+        <div style="font-family: 'Montserrat';font-weight: 500;">
+            https://www.mollie.com/integrations/odoo
+        </div>
     </div>
-    <div class="card-body">
-        <div> <b class="text-success"> NEW </b> Initial release (revamped) </div>
-        <div> <b class="text-success"> NEW </b> Added inline credit card support </div>
-        <div> <b class="text-success"> NEW </b> Added inline issuer support </div>
-        <div> <b class="text-success"> NEW </b> Separate/Common account journal for payment methods </div>
-        <div> <b class="text-success"> NEW </b> Enable/Disable payment methods for shop </div>
+    <div class="col-md-4 border-right py-3">
+        <h4 class="mb-0"> Contact Mollie</h4>
+        <div style="font-family: 'Montserrat';font-weight: 500;color: #0077ff;">
+            https://www.mollie.com/
+        </div>
+    </div>
+    <div class="col-md-4 py-3">
+        <h4 class="mb-0"> Contact Applix</h4>
+        <div style="font-family: 'Montserrat';font-weight: 500;color: #07f;">
+            https://www.applix.be/
+    </div>
     </div>
 </div>

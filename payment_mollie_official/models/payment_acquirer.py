@@ -19,16 +19,94 @@ _logger = logging.getLogger(__name__)
 class PaymentAcquirerMollie(models.Model):
     _inherit = 'payment.acquirer'
 
-    provider = fields.Selection(selection_add=[('mollie', 'Mollie')])
+    provider = fields.Selection(selection_add=[('mollie', 'Mollie')], ondelete={'mollie': 'set default'})
     mollie_api_key_test = fields.Char("Mollie Test API key", required_if_provider="mollie", groups="base.group_user")
     mollie_api_key_prod = fields.Char("Mollie Live API key", required_if_provider="mollie", groups="base.group_user")
     mollie_profile_id = fields.Char("Mollie Profile ID", groups="base.group_user")
     mollie_methods_ids = fields.One2many('mollie.payment.method', 'parent_id', string='Mollie Payment Methods')
+    mollie_voucher_ids = fields.One2many('mollie.voucher.line', 'acquirer_id', string='Mollie Voucher Config')
+    mollie_voucher_enabled = fields.Boolean(compute="_compute_mollie_voucher_enabled")
+
+    def _get_feature_support(self):
+        res = super(PaymentAcquirerMollie, self)._get_feature_support()
+        res['fees'].append('mollie')
+        return res
+
+    def mollie_compute_fees(self, amount, currency_id, country_id):
+        fees = {}
+
+        if self.fees_active:
+            for method in self.mollie_methods_ids:
+                if method.fees_active:
+                    fees[method.method_id_code] = self._mollie_compute_record_fees(amount, method, country_id)  # method fees
+                else:
+                    fees[method.method_id_code] = self._mollie_compute_record_fees(amount, self, country_id)  # global fees
+
+        # TO-DO: Find alternative way for this. Currently, this is simpleset solution as
+        # this method is used at shop, order portal and invoice portal. The full dictionary
+        # is used in payment acquirer list but we send usual fees when we get request from
+        # particular payment method.
+        if request and request.params.get('paymentmethod'):
+            fees = fees.get(request.params.get('paymentmethod'), 0.0)
+
+        return fees
+
+    def _mollie_compute_record_fees(self, amount, record, country_id):
+        country = self.env['res.country'].browse(country_id)
+        if country and self.company_id.sudo().country_id.id == country.id:
+            percentage = record.fees_dom_var
+            fixed = record.fees_dom_fixed
+        else:
+            percentage = record.fees_int_var
+            fixed = record.fees_int_fixed
+        fees = (percentage / 100.0 * amount + fixed) / (1 - percentage / 100.0)
+        return fees
+
+    @api.depends('mollie_methods_ids')
+    def _compute_mollie_voucher_enabled(self):
+        for acquirer in self:
+            acquirer.mollie_voucher_enabled = False
+            if acquirer.provider == 'mollie':
+                if acquirer.mollie_methods_ids.filtered(lambda m: m.method_id_code == 'voucher' and m.active_on_shop):
+                    acquirer.mollie_voucher_enabled = True
 
     def action_mollie_sync_methods(self):
         methods = self._api_mollie_get_active_payment_methods()
         if methods:
             self._sync_mollie_methods(methods)
+            self._create_method_translations(methods)
+
+    def _create_method_translations(self, english_methods):
+        IrTranslation = self.env['ir.translation']
+        supported_locale = self._mollie_get_supported_locale()
+        supported_locale.remove('en_US')  # en_US is default
+        active_langs = self.env['res.lang'].search([('code', 'in', supported_locale)])
+        mollie_methods = self.mollie_methods_ids
+
+        for lang in active_langs:
+            existing_trans = self.env['ir.translation'].search([('name', '=', 'mollie.payment.method,name'), ('lang', '=', lang.code)])
+            translated_method_ids = existing_trans.mapped('res_id')
+            method_to_translate = []
+            for method in mollie_methods:
+                if method.id not in translated_method_ids:
+                    method_to_translate.append(method.id)
+
+            # This will avoid unnessesorry network calls
+            if method_to_translate:
+                methods_data = self._api_mollie_get_active_payment_methods(extra_params={'locale': lang.code})
+                for method_id in method_to_translate:
+                    mollie_method = mollie_methods.filtered(lambda m: m.id == method_id)
+                    translated_value = methods_data.get(mollie_method.method_id_code, {}).get('description')
+                    if translated_value:
+                        IrTranslation.create({
+                            'type': 'model',
+                            'name': 'mollie.payment.method,name',
+                            'lang': lang.code,
+                            'res_id': method_id,
+                            'src': mollie_method.name,
+                            'value': translated_value,
+                            'state': 'translated',
+                        })
 
     def _sync_mollie_methods(self, methods_dict):
 
@@ -106,11 +184,39 @@ class PaymentAcquirerMollie(models.Model):
         # TODO: [PGA] Check currency is supported. Hard coded filter can be applied based on https://docs.mollie.com/payments/multicurrency
         methods = self.mollie_methods_ids.filtered(lambda m: m.active and m.active_on_shop)
 
+        if not self.sudo().mollie_profile_id:
+            methods = methods.filtered(lambda m: m.method_id_code != 'creditcard')
+
         # Hide methods if order amount is higher then method limits
+        remove_voucher_method, extra_params = True, {}
         if order and order._name == 'sale.order':
             methods = methods.filtered(lambda m: order.amount_total >= m.min_amount and (order.amount_total <= m.max_amount or not m.max_amount))
+            remove_voucher_method = not any(map(lambda p: p._get_mollie_voucher_category(), order.mapped('order_line.product_id.product_tmpl_id')))
+            extra_params['amount'] = {'value': "%.2f" % order.amount_total, 'currency': order.currency_id.name}
+            if order.partner_invoice_id.country_id:
+                extra_params['billingCountry'] = order.partner_invoice_id.country_id.code
         if order and order._name == 'account.move':
             methods = methods.filtered(lambda m: order.amount_residual >= m.min_amount and (order.amount_residual <= m.max_amount or not m.max_amount))
+            remove_voucher_method = not any(map(lambda p: p._get_mollie_voucher_category(), order.mapped('invoice_line_ids.product_id.product_tmpl_id')))
+            extra_params['amount'] = {'value': "%.2f" % order.amount_residual, 'currency': order.currency_id.name}
+            if order.partner_id.country_id:
+                extra_params['billingCountry'] = order.partner_id.country_id.code
+        if remove_voucher_method:
+            methods = methods.filtered(lambda m: m.method_id_code != 'voucher')
+
+        # Hide only order type methods from transection links
+        if request and request.httprequest.path == '/website_payment/pay':
+            methods = methods.filtered(lambda m: m.supports_payment_api == True)
+
+        # Hide based on country
+        if request:
+            country_code = request.session.geoip and request.session.geoip.get('country_code') or False
+            if country_code:
+                methods = methods.filtered(lambda m: not m.country_ids or country_code in m.country_ids.mapped('code'))
+
+        # Hide methods if mollie does not supports them
+        suppported_methods = self.sudo()._api_mollie_get_active_payment_methods(extra_params=extra_params)   # sudo as public user do not have access
+        methods = methods.filtered(lambda m: m.method_id_code in suppported_methods.keys())
 
         return methods
 
@@ -128,18 +234,24 @@ class PaymentAcquirerMollie(models.Model):
         tx_values['checkout_url'] = False
         tx_values['error_msg'] = False
         tx_values['status'] = False
+
         if transaction:
-            result = self._mollie_create_order(transaction)
+
+            result = None
+
+            # check if order api is supportable by selected mehtod
+            method_record = self._mollie_get_method_record(transaction.mollie_payment_method)
+            if method_record.supports_order_api:
+                result = self._mollie_create_order(transaction)
 
             # Fallback to payment method
             # Case: When invoice is partially paid or partner have credit note
             # then mollie can not create order because orderline and total amount is diffrent
-            # in that case we have fall back on payment method
-            if result and result.get('error'):
-                method_record = self._mollie_get_method_record(transaction.mollie_payment_method)
-                if method_record.supports_payment_api:
-                    _logger.warning("Can not use order api due to '%s' fallback on payment" % result.get('error'))
-                    result = self._mollie_create_payment(transaction)
+            # in that case we have fall back on payment method.
+            if (result and result.get('error') or result is None) and method_record.supports_payment_api:
+                if result and result.get('error'):
+                    _logger.warning("Can not use order api due to '%s' fallback on payment" % (result.get('error')))
+                result = self._mollie_create_payment(transaction)
 
             if result.get('error'):
                 tx_values['error_msg'] = result['error']
@@ -164,7 +276,7 @@ class PaymentAcquirerMollie(models.Model):
             order_source = transaction.sale_order_ids[0]
 
         if not order_source:
-            return False
+            return None
 
         order_type = 'Sale Order' if order_source._name == 'sale.order' else 'Invoice'
 
@@ -172,12 +284,12 @@ class PaymentAcquirerMollie(models.Model):
             'method': transaction.mollie_payment_method,
             'amount': {
                 'currency': transaction.currency_id.name,
-                'value': "%.2f" % transaction.amount
+                'value': "%.2f" % (transaction.amount + transaction.fees)
             },
 
             'billingAddress': order_source.partner_id._prepare_mollie_address(),
             "orderNumber": "%s (%s)" % (order_type, transaction.reference),
-            'lines': self._mollie_get_order_lines(order_source),
+            'lines': self._mollie_get_order_lines(order_source, transaction),
 
             'metadata': {
                 'transaction_id': transaction.id,
@@ -220,7 +332,7 @@ class PaymentAcquirerMollie(models.Model):
             'method': transaction.mollie_payment_method,
             'amount': {
                 'currency': transaction.currency_id.name,
-                'value': "%.2f" % transaction.amount
+                'value': "%.2f" % (transaction.amount + transaction.fees)
             },
             'description': transaction.reference,
 
@@ -244,7 +356,7 @@ class PaymentAcquirerMollie(models.Model):
 
         # Add if transection has issuer
         if transaction.mollie_payment_issuer:
-            payment_data['payment'] = {'issuer': transaction.mollie_payment_issuer}
+            payment_data['issuer'] = transaction.mollie_payment_issuer
 
         result = self._api_mollie_create_payment(payment_data)
 
@@ -254,18 +366,37 @@ class PaymentAcquirerMollie(models.Model):
             transaction.acquirer_reference = result.get('id')
         return result
 
-    def _mollie_get_payment_data(self, transection_reference):
+    def _mollie_get_payment_data(self, transection_reference, force_payment=False):
+        """ Sending force_payment=True will send payment data even if transection_reference is for order api """
+        mollie_data = False
         if transection_reference.startswith('ord_'):
-            return self._api_mollie_get_order(transection_reference)
+            mollie_data = self._api_mollie_get_order(transection_reference)
         if transection_reference.startswith('tr_'):    # This is not used
-            return self._api_mollie_get_payment(transection_reference)
+            mollie_data = self._api_mollie_get_payment(transection_reference)
+
+        if not force_payment:
+            return mollie_data
+
+        transection_id = False
+        if mollie_data['resource'] == 'order':
+            payments = mollie_data.get('_embedded', {}).get('payments', [])
+            if payments:
+                # TODO: handle multiple payment for same order
+                transection_id = payments[0]['id']
+        elif mollie_data['resource'] == 'payment':
+            transection_id = mollie_data['id']
+
+        mollie_client = self._api_mollie_get_client()
+
+        # TO-DO: check if mollie_data is same as below line
+        return mollie_client.payments.get(transection_id)
 
     # -----------------------------------------------
     # Methods that uses to mollie python lib
     # -----------------------------------------------
 
     def _api_mollie_get_client(self):
-        mollie_client = MollieClient()
+        mollie_client = MollieClient(timeout=5)
         # TODO: [PGA] Add partical validation for keys e.g. production key should start from live_
 
         if self.state == 'enabled':
@@ -301,12 +432,13 @@ class PaymentAcquirerMollie(models.Model):
         mollie_client = self._api_mollie_get_client()
         return mollie_client.orders.get(tx_id, embed="payments")
 
-    def _api_mollie_get_active_payment_methods(self, api_type=None):
+    def _api_mollie_get_active_payment_methods(self, api_type=None, extra_params={}):
         result = {}
 
         mollie_client = self._api_mollie_get_client()
-        order_methods = mollie_client.methods.list(resource="orders", include='issuers')
-        payment_methods = mollie_client.methods.list()
+        params = {'include': 'issuers', 'includeWallets': 'applepay', **extra_params}
+        order_methods = mollie_client.methods.list(resource="orders", **params)
+        payment_methods = mollie_client.methods.list(**params)
 
         # Order api will always have more methods then payment api
         if order_methods.get('count'):
@@ -324,20 +456,9 @@ class PaymentAcquirerMollie(models.Model):
 
         return result
 
-    def _api_mollie_refund(self, amount, currency, transection_reference):
-        payment_record = self._mollie_get_payment_data(transection_reference)
-        transection_id = False
-        if payment_record['resource'] == 'order':
-            payments = payment_record.get('_embedded', {}).get('payments', [])
-            if payments:
-                # TODO: handle multiple payment for same order
-                transection_id = payments[0]['id']
-        elif payment_record['resource'] == 'payment':
-            transection_id = payment_record['id']
-
+    def _api_mollie_refund(self, amount, currency, payment_record):
         mollie_client = self._api_mollie_get_client()
-        payment_rec = mollie_client.payments.get(transection_id)
-        refund = mollie_client.payment_refunds.on(payment_rec).create({
+        refund = mollie_client.payment_refunds.on(payment_record).create({
             'amount': {
                 'value': "%.2f" % amount,
                 'currency': currency.name
@@ -349,17 +470,43 @@ class PaymentAcquirerMollie(models.Model):
     # Methods that create mollie order payload
     # -----------------------------------------------
 
-    def _mollie_get_order_lines(self, order):
+    def _mollie_get_order_lines(self, order, transaction):
         lines = []
         if order._name == "sale.order":
             order_lines = order.order_line.filtered(lambda l: not l.display_type)  # ignore notes and section lines
-            lines = self._mollie_prepare_so_lines(order_lines)
+            lines = self._mollie_prepare_so_lines(order_lines, transaction)
         if order._name == "account.move":
             order_lines = order.invoice_line_ids.filtered(lambda l: not l.display_type)  # ignore notes and section lines
-            lines = self._mollie_prepare_invoice_lines(order_lines)
+            lines = self._mollie_prepare_invoice_lines(order_lines, transaction)
+        if transaction.fees:    # Fees or Surcharge (if configured)
+            fees_line = self._mollie_prepare_fees_line(transaction)
+            lines.append(fees_line)
         return lines
 
-    def _mollie_prepare_so_lines(self, lines):
+    def _mollie_prepare_fees_line(self, transaction):
+        return {
+            'name': _('Acquirer Fees'),
+            'type': 'surcharge',
+            'metadata': {
+                "type": 'surcharge'
+            },
+            'quantity': 1,
+            'unitPrice': {
+                'currency': transaction.currency_id.name,
+                'value': "%.2f" % transaction.fees
+            },
+            'totalAmount': {
+                'currency': transaction.currency_id.name,
+                'value': "%.2f" % transaction.fees
+            },
+            'vatRate': "%.2f" % 0,
+            'vatAmount': {
+                'currency': transaction.currency_id.name,
+                'value': "%.2f" % 0,
+            }
+        }
+
+    def _mollie_prepare_so_lines(self, lines, transaction):
         result = []
         for line in lines:
             line_data = self._mollie_prepare_lines_common(line)
@@ -379,10 +526,18 @@ class PaymentAcquirerMollie(models.Model):
                     'value': "%.2f" % line.price_tax,
                 }
             })
+
+            if transaction.mollie_payment_method == 'voucher':
+                category = line.product_template_id._get_mollie_voucher_category()
+                if category:
+                    line_data.update({
+                        'category': category
+                    })
+
             result.append(line_data)
         return result
 
-    def _mollie_prepare_invoice_lines(self, lines):
+    def _mollie_prepare_invoice_lines(self, lines, transaction):
         """
             Note: Line pricing calculation
             Mollie need 1 unit price with tax included (with discount if any).
@@ -403,20 +558,28 @@ class PaymentAcquirerMollie(models.Model):
             line_data.update({
                 'quantity': int(line.quantity),    # TODO: Mollie does not support float. Test with float amount
                 'unitPrice': {
-                    'currency': line.always_set_currency_id.name,
+                    'currency': line.currency_id.name,
                     'value': "%.2f" % (line.price_total / int(line.quantity))
                 },
                 'totalAmount': {
-                    'currency': line.always_set_currency_id.name,
+                    'currency': line.currency_id.name,
                     'value': "%.2f" % line.price_total,
                 },
                 'vatRate': "%.2f" % sum(line.tax_ids.mapped('amount')),
                 'vatAmount': {
-                    'currency': line.always_set_currency_id.name,
+                    'currency': line.currency_id.name,
                     'value': "%.2f" % (line.price_total - line.price_subtotal),
                 }
             })
+
+            if transaction.mollie_payment_method == 'voucher':
+                category = line.product_id.product_tmpl_id._get_mollie_voucher_category()
+                if category:
+                    line_data.update({
+                        'category': category
+                    })
             result.append(line_data)
+
         return result
 
     def _mollie_prepare_lines_common(self, line):
@@ -436,6 +599,12 @@ class PaymentAcquirerMollie(models.Model):
             base_url = self.get_base_url()
             product_data['productUrl'] = urls.url_join(base_url, line.product_id.website_url)
 
+        # Metadata - used to sync delivery data with shipment API
+        product_data['metadata'] = {
+            'line_id': line.id,
+            'product_id': line.product_id.id
+        }
+
         return product_data
 
     # -----------------------------------------------
@@ -444,14 +613,17 @@ class PaymentAcquirerMollie(models.Model):
 
     def _mollie_user_locale(self):
         user_lang = self.env.context.get('lang')
-        supported_locale = [
+        supported_locale = self._mollie_get_supported_locale()
+        return user_lang if user_lang in supported_locale else 'en_US'
+
+    def _mollie_get_supported_locale(self):
+        return [
             'en_US', 'nl_NL', 'nl_BE', 'fr_FR',
             'fr_BE', 'de_DE', 'de_AT', 'de_CH',
             'es_ES', 'ca_ES', 'pt_PT', 'it_IT',
             'nb_NO', 'sv_SE', 'fi_FI', 'da_DK',
             'is_IS', 'hu_HU', 'pl_PL', 'lv_LV',
             'lt_LT']
-        return user_lang if user_lang in supported_locale else 'en_US'
 
     def _mollie_redirect_url(self, tx_id):
         base_url = self.get_base_url()
@@ -465,3 +637,15 @@ class PaymentAcquirerMollie(models.Model):
 
     def _mollie_get_method_record(self, method_code):
         return self.env['mollie.payment.method'].search([('method_id_code', '=', method_code)], limit=1)
+
+    # -----------------------------------------------
+    # Updates related fixes
+    # -----------------------------------------------
+
+    @api.model
+    def _mollie_update_hook(self):
+        # Mollie no longer supporing inghomepay
+        _logger.info("Mollie update hook called")
+        inghomepay_method = self.env['mollie.payment.method'].search([('method_id_code', '=', 'inghomepay')])
+        if inghomepay_method:
+            inghomepay_method.write({'active': False})
