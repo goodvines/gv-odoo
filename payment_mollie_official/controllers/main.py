@@ -1,55 +1,34 @@
 # -*- coding: utf-8 -*-
 
-import werkzeug
-import logging
-
 from odoo import http
-from odoo.http import request, Response
+from odoo.http import request
 
-_logger = logging.getLogger(__name__)
+from odoo.addons.payment.controllers.portal import PaymentPortal
 
 
-class MollieController(http.Controller):
-    _notify_url = "/payment/mollie/notify"
-    _redirect_url = "/payment/mollie/redirect"
+class MolliePaymentPortal(PaymentPortal):
 
-    @http.route("/payment/mollie/action", type='http', auth="public", methods=['POST'], csrf=False, sitemap=False)
-    def mollie_redirect(self, **post):
-        if post.get('checkout_url'):
-            return werkzeug.utils.redirect(post.get('checkout_url'))
-        return werkzeug.utils.redirect("/payment/process")
+    @staticmethod
+    def _validate_transaction_kwargs(kwargs, additional_allowed_keys=()):
+        if kwargs.get('provider_id'):
+            provider_id = request.env['payment.provider'].sudo().browse(int(kwargs['provider_id']))
+            if provider_id.code == 'mollie':
+                additional_allowed_keys += ('mollie_card_token', 'mollie_payment_issuer', 'mollie_save_card')
+        super(MolliePaymentPortal, MolliePaymentPortal)._validate_transaction_kwargs(kwargs, additional_allowed_keys=additional_allowed_keys)
 
-    @http.route("/payment/mollie/redirect", type='http', auth="public", csrf=False, sitemap=False)
-    def mollie_return(self, **post):
-        if post.get('tx'):
-            transaction = request.env["payment.transaction"].sudo().browse(int(post.get('tx')))
-
-            # Checked transaction state because webhook might have already confirmed the transection
-            if transaction.exists() and transaction.acquirer_reference and transaction.state not in ['done', 'cancel']:
-                data = transaction.acquirer_id._mollie_get_payment_data(transaction.acquirer_reference)
-                request.env["payment.transaction"].sudo().form_feedback(data, "mollie")
-
-        return werkzeug.utils.redirect("/payment/process")
-
-    @http.route("/payment/mollie/notify", type='http', auth="public", methods=['POST'], csrf=False, sitemap=False)
-    def mollie_notify(self, **post):
-        if post.get('tx'):
-            transaction = request.env["payment.transaction"].sudo().browse(int(post.get('tx')))
-            if transaction.exists() and transaction.acquirer_reference == post.get('id'):
-                data = transaction.acquirer_id._mollie_get_payment_data(transaction.acquirer_reference)
-                request.env["payment.transaction"].sudo().form_feedback(data, "mollie")
-
-                if transaction.state in ['done', 'cancel']:
-
-                    # We will process the payment from webhook confirmation. payment confirmation might
-                    # be delayed and user might left the screen (may be user paid via QR and left the screen).
-                    # A cron is already there for such confirmation but we will process the order immediately
-                    # because we already got the confirmation and there is no need to wait for cron.
-                    # /!\/!\/!\ Whenever you make changes here check `mollie_manual_payment_validation` method too.
-                    if not transaction.is_processed and transaction.state == 'done':
-                        transaction._post_process_after_done()
-
-                    # We do not need next webhooks if payment is already done or canceled
-                    return Response("OK", status=200)
-
-        return Response("Not Confirmed", status=418)
+    def _create_transaction(
+        self, provider_id, payment_method_id, token_id, amount, currency_id, partner_id, flow,
+        tokenization_requested, landing_route, reference_prefix=None, is_validation=False,
+        custom_create_values=None, **kwargs
+    ):
+        mollie_custom_create_values = {
+            "mollie_card_token": kwargs.pop("mollie_card_token", None),
+            "mollie_payment_issuer": kwargs.pop("mollie_payment_issuer", None),
+            "mollie_save_card": kwargs.pop("mollie_save_card", None)
+        }
+        custom_create_values = custom_create_values or {}
+        custom_create_values.update(mollie_custom_create_values)
+        return super()._create_transaction(provider_id, payment_method_id, token_id, amount, currency_id, partner_id, flow,
+            tokenization_requested, landing_route, reference_prefix=reference_prefix, is_validation=is_validation,
+            custom_create_values=custom_create_values, **kwargs
+        )

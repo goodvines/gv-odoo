@@ -1,316 +1,226 @@
-odoo.define('mollie.payment.form', function (require) {
-"use strict";
+/** @odoo-module **/
 
-var payement_form = require('payment.payment_form')
+import { _t } from "@web/core/l10n/translation";
+import { loadJS } from "@web/core/assets";
+import paymentForm from '@payment/js/payment_form';
+import QrDialog from '@payment_mollie_official/js/qr_dialog';
 
-var core = require('web.core');
-var Dialog = require('web.Dialog');
-var publicWidget = require('web.public.widget');
-var ajax = require('web.ajax');
+paymentForm.include({
 
-var _t = core._t;
-
-// Override payment form for mollie's custom flow
-publicWidget.registry.PaymentForm.include({
-    events: _.extend({
-        'click .o_issuer': '_clickIssuer',
-    }, publicWidget.registry.PaymentForm.prototype.events),
-    /**
-     * @override
-     */
-    init: function () {
-        this.mollie_loaded = false;
-        this.mollieJSURL = "https://js.mollie.com/v1/mollie.js";
-        return this._super.apply(this, arguments);
-    },
-
-    /**
-     * @override
-     */
-    willStart: function () {
-        var self = this;
-        self.libPromise = ajax.loadJS(self.mollieJSURL);
-        return this._super.apply(this, arguments).then(function () {
-            return self.libPromise;
-        });
-    },
+    events: Object.assign({}, paymentForm.prototype.events, {
+        'click .o_mollie_issuer': '_onClickIssuer',
+        'change input[name="mollieCardType"]': '_onChangeCardType',
+    }),
 
     /**
      * @override
      */
     start: function () {
-        var self = this;
-        return this._super.apply(this, arguments).then(function () {
-            // Hide the option if Apple Pay is not available
-            if (!window.ApplePaySession || !ApplePaySession.canMakePayments()) {
-                self.$('input[data-methodname="applepay"]').closest('.o_payment_acquirer_select').hide();
-                return;
-            }
-        });
+        // Show apple pay option only for apple devices
+        if (!(window.ApplePaySession && window.ApplePaySession.canMakePayments())) {
+            this.$('input[data-payment-method-code="apple_pay"]').closest('li[name="o_payment_option"]').remove();
+        }
+        return this._super.apply(this, arguments);
     },
 
-    // ---------------------------------
-    // Existing Overridden methods
-    // ---------------------------------
-
     /**
-     * @override
+     * Update the payment context to set the flow to 'direct'.
+     *
+     * @override method from @payment/js/payment_form
+     * @private
+     * @param {number} providerId - The id of the selected payment option's provider.
+     * @param {string} providerCode - The code of the selected payment option's provider.
+     * @param {number} paymentOptionId - The id of the selected payment option
+     * @param {string} paymentMethodCode - The code of the selected payment method, if any.
+     * @param {string} flow - The online payment flow of the selected payment option.
+     * @return {void}
      */
-    updateNewPaymentDisplayStatus: function () {
-        var self = this;
-        var $checkedRadio = this.$('input[type="radio"]:checked');
-        if ($checkedRadio.length !== 1) {
+    async _prepareInlineForm(providerId, providerCode, paymentOptionId, paymentMethodCode, flow) {
+        if (providerCode !== 'mollie' || paymentMethodCode !== 'card') {
+            this._super(...arguments);
             return;
         }
-        var response = this._super.apply(this, arguments);
-        var provider = $checkedRadio.data('provider');
-        var methodName = $checkedRadio.data('methodname');
-        if (provider === 'mollie' && (methodName === 'creditcard' || methodName === 'ideal')) {
-            this.$('[id*="o_payment_add_token_acq_"]').addClass('d-none');
-            this.$('[id*="o_payment_form_acq_"]').addClass('d-none');
-            this.$('#o_payment_form_acq_' + methodName).removeClass('d-none');
-
-            // Wait js lad for creditcard
-            if (!this.mollie_loaded && methodName === 'creditcard') {
-                this.mollie_loaded = true;
-                // Wait for lib in case network is slow
-                self.libPromise.then(function () {
-                    self._loadMollieComponent();
-                });
-            }
+        let $creditCardContainer = this.$("#o_mollie_component");
+        if (!$creditCardContainer.length || this.mollieComponentLoaded) {
+            return this._super(...arguments);
         }
-
-        return response;
-
-    },
-    /**
-     * @override
-     */
-    payEvent: function (ev) {
-        ev.preventDefault();
-        var form = this.el;
-        var self = this;
-
-        if (ev.type === 'submit') {
-            var button = $(ev.target).find('*[type="submit"]')[0]
-        } else {
-            var button = ev.target;
-        }
-
-        var $checkedRadio = this.$('input[type="radio"]:checked');
-        if ($checkedRadio.length === 1 && $checkedRadio.data('provider') === 'mollie') {
-            // Right now pass and submit the from to get mollie component token.
-            this.disableButton(button);
-            var methodName = $checkedRadio.data('methodname');
-            if (methodName === 'creditcard') {
-                return this._getMollieToken(button)
-                    .then(this._createMollieTransaction.bind(this, methodName, button));
-            } else {
-                return this._createMollieTransaction(methodName, button);
-            }
-        } else {
-            return this._super.apply(this, arguments);
+        const checkedRadio = this.el.querySelector('input[name="o_payment_radio"]:checked');
+        const inlineForm = this._getInlineForm(checkedRadio);
+        const useSavedCard = inlineForm.querySelector('#mollieSavedCard')?.checked;
+        if (!useSavedCard) {
+            await this._setupMollieComponent();
         }
     },
 
-    // ---------------------------------
-    // Mollie specific methods
-    // ---------------------------------
-
     /**
-     * Called when clicking on mollie radio button
-     * This will setup mollie component
-     *
-     * @private
-     */
-    _loadMollieComponent: function () {
-        var mollieProfileId = this.$('#o_mollie_component').data('profile_id');
-        var mollieTestMode = this.$('#o_mollie_component').data('mode') === 'test';
+     * Setup the mollie component for the credit card from.
+    *
+    * @private
+    */
+    async _setupMollieComponent() {
+        this.mollieComponentLoaded = true;
+        await loadJS('https://js.mollie.com/v1/mollie.js');
 
-        var context;
+        const mollieProfileId = this.$('#o_mollie_component').data('profile_id');
+        const mollieTestMode = this.$('#o_mollie_component').data('mode') === 'test';
+
+        let context;
         this.trigger_up('context_get', {
             callback: function (ctx) {
                 context = ctx;
             },
         });
-        var lang = context.lang || 'en_US';
+        const lang = context.lang || 'en_US';
         this.mollieComponent = Mollie(mollieProfileId, { locale: lang, testmode: mollieTestMode });
-        this._bindMollieInputs();
+        this._createMollieComponent('cardHolder', '#mollie-card-holder');
+        this._createMollieComponent('cardNumber', '#mollie-card-number');
+        this._createMollieComponent('expiryDate', '#mollie-expiry-date');
+        this._createMollieComponent('verificationCode', '#mollie-verification-code');
     },
+
     /**
-     * @private
-     */
-    _getMollieToken: function (button) {
-        var self = this;
-        return this.mollieComponent.createToken().then(function (result) {
-            if (result.error) {
-                self.displayNotification({
-                    type: 'danger',
-                    title: _t("Error"),
-                    message: result.error.message,
-                    sticky: false,
-                });
-                self.enableButton(button);
+    *  Create the mollie component  and bind events to handles errors.
+    *
+    * @private
+    * @param {string} type - component type
+    * @param {string} componentId - Id of component to bind the listener
+    */
+    _createMollieComponent: function (type, componentId) {
+        let component = this.mollieComponent.createComponent(type);
+        component.mount(componentId);
+
+        let $componentError = this.$(`${componentId}-error`);
+        component.addEventListener('change', function (ev) {
+            if (ev.error && ev.touched) {
+                $componentError.text(ev.error);
+            } else {
+                $componentError.text('');
             }
-            return result.token || false;
         });
     },
+
+    async _initiatePaymentFlow(providerCode, paymentOptionId, paymentMethodCode, flow) {
+        this._mollieCardToken = false;
+        const _super = this._super.bind(this);
+
+        // TODO: put next 3 lines function (it keeps repeating)
+        const checkedRadio = this.el.querySelector('input[name="o_payment_radio"]:checked');
+        const inlineForm = this._getInlineForm(checkedRadio);
+        const useSavedCard = inlineForm.querySelector('#mollieSavedCard')?.checked;
+
+        if (providerCode === 'mollie' && paymentMethodCode === 'card' && this.mollieComponentLoaded && !useSavedCard) {
+            this._mollieCardToken = await this._prepareMollieCardToken();
+            // TODO: What if there no token
+        }
+        await _super(...arguments);
+        return;
+    },
+
     /**
+     * Create the card token from the mollieComponent.
+     *
      * @private
+     * @return {Promise}
      */
-    _createMollieTransaction: function (paymentmethod, button, token) {
-        if (!token && paymentmethod === 'creditcard') {
-            return;
-        }
-        var self = this;
-        var issuer = false;
-        var checked_radio = this.$('input[type="radio"]:checked')[0];
-        var acquirer_id = this.getAcquirerIdFromRadio(checked_radio);
-        var $tx_url = this.$el.find('input[name="prepare_tx_url"]');
-        if (paymentmethod === 'ideal') {
-            issuer = this.$('#o_payment_form_acq_ideal .o_issuer.active').data('methodname');
-        }
-
-        if ($tx_url.length === 1) {
-            return this._rpc({
-                route: $tx_url[0].value,
-                params: {
-                    'acquirer_id': parseInt(acquirer_id),
-                    'save_token': false,
-                    'access_token': this.options.accessToken,
-                    'success_url': this.options.successUrl,
-                    'error_url': this.options.errorUrl,
-                    'callback_method': this.options.callbackMethod,
-                    'order_id': this.options.orderId,
-                    'mollie_payment_token': token,
-                    'paymentmethod': paymentmethod,
-                    'mollie_issuer': issuer
-                },
-            }).then(function (result) {
-                if (result) {
-                    // if the server sent us the html form, we create a form element
-                    var newForm = document.createElement('form');
-                    newForm.setAttribute("method", "post"); // set it to post
-                    newForm.setAttribute("provider", checked_radio.dataset.provider);
-                    newForm.hidden = true; // hide it
-                    newForm.innerHTML = result; // put the html sent by the server inside the form
-                    var action_url = $(newForm).find('input[name="data_set"]').data('actionUrl');
-                    newForm.setAttribute("action", action_url); // set the action url
-                    $(document.getElementsByTagName('body')[0]).append(newForm); // append the form to the body
-                    $(newForm).find('input[data-remove-me]').remove(); // remove all the input that should be removed
-                    var errorInput = $(newForm).find("input[name='error_msg']"); // error message
-                    if (errorInput && errorInput.val()) {
-                        var msg = _t('Payment method is not supported. Try another payment method or contact us');
-                        var errorMsg = (errorInput.val() || "");
-                        new Dialog(null, {
-                            title: _t('Info'),
-                            size: 'medium',
-                            $content: _.str.sprintf('<p><b><b> %s </b> <br/> <span class="small text-muted"> Error Message: %s </span> </p>', msg, errorMsg),
-                            buttons: [
-                                { text: _t('Ok'), close: true }]
-                        }).open();
-                        self.enableButton(button);
-                        return new Promise(function () { });
-                    }
-
-                    if (action_url) {
-                        newForm.submit(); // and finally submit the form
-                        return new Promise(function () { });
-                    }
-                }
-                else {
-                    self.displayError(
-                        _t('Server Error'),
-                        _t("We are not able to redirect you to the payment form.")
-                    );
-                    self.enableButton(button);
-                }
-            }).guardedCatch(function (error) {
-                error.event.preventDefault();
-                self.displayError(
-                    _t('Server Error'),
-                    _t("We are not able to redirect you to the payment form.") + " " +
-                    self._parseError(error)
-                );
-            });
-        }
-        else {
-            // we append the form to the body and send it.
-            this.displayError(
-                _t("Cannot setup the payment"),
-                _t("We're unable to process your payment.")
+    async _prepareMollieCardToken() {
+        let tokenResult = await this.mollieComponent.createToken()
+        if (tokenResult.error) {
+            this._displayErrorDialog(
+                _t("Error"), tokenResult.error.message
             );
-            self.enableButton(button);
+            this._enableButton();
         }
+        return tokenResult.token || false;
     },
-    /**
-     * @private
-     */
-    _bindMollieInputs: function () {
-        var cardHolder = this.mollieComponent.createComponent('cardHolder');
-        cardHolder.mount('#mollie-card-holder');
+    // /**
+    //  * Prepare the params for the RPC to the transaction route.
+    //  *
+    //  * @private
+    //  * @return {object} The transaction route params.
+    //  */
+    _prepareTransactionRouteParams() {
+        const transactionRouteParams = this._super(...arguments);
+        const paymentContext = this.paymentContext;
+        const checkedRadio = this.el.querySelector('input[name="o_payment_radio"]:checked');
+        const inlineForm = this._getInlineForm(checkedRadio);
 
-        var cardNumber = this.mollieComponent.createComponent('cardNumber');
-        cardNumber.mount('#mollie-card-number');
+        if (paymentContext.providerCode === 'mollie') {
 
-        var expiryDate = this.mollieComponent.createComponent('expiryDate');
-        expiryDate.mount('#mollie-expiry-date');
+            if (paymentContext.paymentMethodCode === 'card') {
+                const useSavedCard = inlineForm.querySelector('#mollieSavedCard')?.checked;
 
-        var verificationCode = this.mollieComponent.createComponent('verificationCode');
-        verificationCode.mount('#mollie-verification-code');
+                if(this._mollieCardToken && !useSavedCard) {
+                    transactionRouteParams['mollie_card_token'] = this._mollieCardToken;
+                }
 
-        // Validation
-        var cardHolderError = this.$('#mollie-card-holder-error')[0];
-        cardHolder.addEventListener('change', function (ev) {
-            if (ev.error && ev.touched) {
-                cardHolderError.textContent = ev.error;
-            } else {
-                cardHolderError.textContent = '';
+                if (inlineForm.querySelector('input[name="o_mollie_save_card"]') || useSavedCard) {
+                    transactionRouteParams['mollie_save_card'] = inlineForm.querySelector('input[name="o_mollie_save_card"]').checked || useSavedCard;
+                }
+
             }
-        });
-
-        var cardNumberError = this.$('#mollie-card-number-error')[0];
-        cardNumber.addEventListener('change', function (ev) {
-            if (ev.error && ev.touched) {
-                cardNumberError.textContent = ev.error;
-            } else {
-                cardNumberError.textContent = '';
+            const activeIssuer = inlineForm.querySelector('.o_mollie_issuer.active')
+            if (activeIssuer) {
+                transactionRouteParams['mollie_payment_issuer'] = inlineForm.querySelector('.o_mollie_issuer.active').dataset.mollieIssuer;
             }
-        });
 
-        var expiryDateError = this.$('#mollie-expiry-date-error')[0];
-        expiryDate.addEventListener('change', function (ev) {
-            if (ev.error && ev.touched) {
-                expiryDateError.textContent = ev.error;
-            } else {
-                expiryDateError.textContent = '';
-            }
-        });
+        }
 
-        var verificationCodeError = this.$('#mollie-verification-code-error')[0];
-        verificationCode.addEventListener('change', function (ev) {
-            if (ev.error && ev.touched) {
-                verificationCodeError.textContent = ev.error;
-            } else {
-                verificationCodeError.textContent = '';
-            }
-        });
+        return transactionRouteParams;
     },
-
-    //--------------------------------------------------------------------------
-    // Handlers
-    //--------------------------------------------------------------------------
 
     /**
      * @private
      * @param {MouseEvent} ev
      */
-    _clickIssuer: function (ev) {
-        var $container = $(ev.currentTarget).closest('.o_issuer_container');
-        $container.find('.o_issuer').removeClass('active');
-        $(ev.currentTarget).addClass('active');
-    }
+    _onClickIssuer: function (ev) {
+        let $container = $(ev.currentTarget).closest('.o_mollie_issuer_container');
+        $container.find('.o_mollie_issuer').removeClass('active border-primary');
+        $(ev.currentTarget).addClass('active border-primary');
+    },
 
-});
+    /**
+     * @private
+     * @param {MouseEvent} ev
+     */
+    _onChangeCardType: function (ev) {
+        this.$('#o_mollie_component').toggleClass('d-none', $(ev.currentTarget).val() !== 'component');
+        this.$('#o_mollie_save_card').toggleClass('d-none', $(ev.currentTarget).val() !== 'component');
+
+        if ($(ev.currentTarget).val() == 'component' && !this.mollieComponentLoaded) {
+            this._setupMollieComponent();
+        }
+    },
+
+    /**
+     * Redirect the customer by submitting the redirect form included in the processing values.
+     *
+     * @private
+     * @param {string} providerCode - The code of the selected payment option's provider.
+     * @param {number} paymentOptionId - The id of the selected payment option.
+     * @param {string} paymentMethodCode - The code of the selected payment method, if any.
+     * @param {object} processingValues - The processing values of the transaction.
+     * @return {void}
+     */
+    _processRedirectFlow(providerCode, paymentOptionId, paymentMethodCode, processingValues) {
+        const $redirectForm = $(processingValues.redirect_form_html).attr(
+            'id', 'o_payment_redirect_form'
+        );
+        var qrImgSrc = $redirectForm.data('qrsrc');
+        if (qrImgSrc) {
+            var dialog = new QrDialog(this, {
+                qrImgSrc: qrImgSrc,
+                submitRedirectForm: this._super.bind(this, ...arguments),
+                size: 'small',
+                title: _t('Scan QR'),
+                renderFooter: false
+            });
+            dialog.opened().then(() => {
+                this._enableButton();
+            });
+            dialog.open();
+        } else {
+            return this._super(...arguments);
+        }
+    },
 
 });

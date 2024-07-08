@@ -9,7 +9,7 @@
             <field name="company_currency_id" position="after">
                 <field name="is_mollie_refund" invisible="1"/>
                 <field name="mollie_transecion_id" invisible="1"/>
-                <div class="alert alert-warning" role="alert" attrs="{'invisible': [('is_mollie_refund', '=', False)]}">
+                <div class="alert alert-warning" role="alert" invisible="not is_mollie_refund">
                     <b> Note: </b> Creating payment from here will refund the amount from mollie too.
                     <div class="float-right">
                         Maximum Amount you can refund is <b><field name="max_mollie_amount" readonly="1" /> </b>
@@ -25,7 +25,7 @@
         <field name="inherit_id" ref="account.view_account_payment_form"/>
         <field name="arch" type="xml">
             <field name="partner_bank_id" position="after">
-                <field name="mollie_refund_reference" attrs="{'invisible': [('mollie_refund_reference', '=', False)]}"/>
+                <field name="mollie_refund_reference" invisible="not mollie_refund_reference"/>
             </field>
         </field>
     </record>

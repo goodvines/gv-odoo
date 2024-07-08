@@ -10,12 +10,13 @@
                 <field name="valid_for_mollie_refund" invisible="1"/>
                 <button string="Mollie Refund"
                     name="action_register_refund_payment" type="object"
-                    attrs="{'invisible' : [('valid_for_mollie_refund', '=', False)]}"/>
+                    invisible="not valid_for_mollie_refund"/>
             </header>
             <xpath expr="//div[@name='journal_div']" position="after">
-                <field name="mollie_refund_reference" attrs="{'invisible' : [('mollie_refund_reference', '=' ,False)]}" groups="base.group_no_one"/>
-                <span attrs="{'invisible' : [('mollie_refund_reference', '=' ,False)]}"> </span>
-                <span attrs="{'invisible' : [('mollie_refund_reference', '=' ,False)]}" class="badge badge-success"> <span class="fa fa-check"/> Amount refunded in mollie </span>
+                <field name="mollie_refund_reference" invisible="1"/>
+                <field name="mollie_refund_reference" groups="base.group_no_one" readonly="1" invisible="not mollie_refund_reference"/>
+                <span invisible="not mollie_refund_reference"> </span>
+                <span class="badge bg-success text-white" invisible="not mollie_refund_reference"> <span class="fa fa-check"/> Amount refunded in mollie </span>
             </xpath>
         </field>
     </record>
