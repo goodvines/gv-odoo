@@ -9,7 +9,7 @@
     'maintainer': 'Applix',
     'website': 'https://www.mollie.com/',
 
-    'summary': 'Add extra features in mollie payment',
+    'summary': 'Add extra features in mollie payment.',
     'description': """
         Add extra features in mollie payment
     """,
