@@ -5,7 +5,7 @@ def migrate(cr, version):
 
     cr.execute("""
         update ir_ui_view v
-        set active = false
+        set set inherit_id = NULL, mode='primary', active = false
         where
         v.id in (3322,)
     """)
