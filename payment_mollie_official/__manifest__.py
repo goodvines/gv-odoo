@@ -11,7 +11,7 @@
 
     'summary': 'Add extra features in mollie payment.',
     'description': """
-        Add extra features in mollie payment
+        Add extra features in mollie payment.
     """,
 
     'depends': [
