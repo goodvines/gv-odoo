@@ -18,7 +18,8 @@
                         <a href="https://www.mollie.com/dashboard/developers/api-keys" target="_new"> Get your API keys <i class="fa fa-arrow-right"></i></a>
                     </b>
                 </small>
-                <field name="mollie_show_save_card" />
+                <!-- <field name="mollie_show_save_card" /> -->
+                <field name="mollie_debug_logging" invisible="1"/>
             </field>
 
             <a name="action_view_payment_methods" position="attributes">
@@ -26,24 +27,45 @@
             </a>
 
             <a name="action_view_payment_methods" position="after">
-                <a type="object" name="action_sync_mollie" class="btn btn-link" role="button" invisible="code != 'mollie'">
+                <a type="object" name="action_sync_mollie" class="btn btn-link" role="button"
+                    invisible="code != 'mollie' or state == 'disabled'">
                     <i class="fa fa-refresh o_button_icon"/> Sync Mollie Methods
                 </a>
             </a>
+            <xpath expr="//div[hasclass('oe_button_box')]" position="inside">
+                <button name="toggle_mollie_debug"
+                    invisible="mollie_debug_logging or code != 'mollie'"
+                    class="oe_stat_button"
+                    groups="base.group_no_one"
+                    type="object" icon="fa-code">
+                    <div class="o_stat_info o_field_widget">
+                        <span class="o_stat_text text-danger">No debug</span>
+                    </div>
+                </button>
+                <button name="toggle_mollie_debug"
+                    invisible="not mollie_debug_logging or code != 'mollie'"
+                    class="oe_stat_button"
+                    groups="base.group_no_one"
+                    type="object" icon="fa-code">
+                    <div class="o_stat_info o_field_widget">
+                        <span class="text-success">Debug requests</span>
+                    </div>
+                </button>
+            </xpath>
+            <xpath expr="//group[@name='payment_followup']" position="after">
+                <group string="Rounding Adjustment" name="rounding_adjustment"
+                    invisible="code != 'mollie'">
+                    <field name="mollie_rounding_adjustment" />
+                    <field name="rounding_line_description" placeholder="Default: 'Rounding Adjustment'" invisible="not mollie_rounding_adjustment" />
+                    <div colspan="2" class="text-muted small mb-2">
+                        When global rounding is enabled in Odoo, order or invoice totals may differ
+                        from the sum of their lines. Enable this option to add a rounding adjustment
+                        line on the Mollie side so the payment amount matches exactly. No changes
+                        are made in Odoo; the adjustment is handled entirely on the Mollie side.
+                    </div>
+                </group>
+            </xpath>
         </field>
     </record>
-
-    <!-- <record id="payment_method_tree" model="ir.ui.view">
-        <field name="name">payment.method.form.inherit.mollie</field>
-        <field name="model">payment.method</field>
-        <field name="inherit_id" ref="payment.payment_method_tree"/>
-        <field name="arch" type="xml">
-            <field name="sequence"  position="before">
-                <header>
-                    <button string="Sync Mollie Methods" type="object" invisible="context.get('provider_code') != 'mollie'" name="action_sync_mollie_methods" display="always"/>
-                </header>
-            </field>
-        </field>
-    </record> -->
 
 </odoo>

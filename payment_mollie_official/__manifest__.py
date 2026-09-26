@@ -2,22 +2,21 @@
 
 {
     'name': 'Mollie Payments Extended',
-    'version': '19.2',
+    'version': '19.0.0.4',
     'category': 'eCommerce',
     'license': 'LGPL-3',
     'author': 'Mollie',
-    'maintainer': 'Applix',
+    'maintainer': 'Droggol Infotech Private Limited',
     'website': 'https://www.mollie.com/',
 
-    'summary': 'Add extra features in mollie payment.',
+    'summary': 'Add extra features in mollie payment',
     'description': """
-        Add extra features in mollie payment.
+        Add extra features in mollie payment
     """,
 
     'depends': [
-        'payment_mollie', 'product', 'account'
+        'payment_mollie', 'product', 'account', 'base_automation'
     ],
-    'external_dependencies': {},
     'data': [
         'security/ir.model.access.csv',
         'views/payment_views.xml',
@@ -26,6 +25,7 @@
         'views/payment_mollie_templates.xml',
         'views/account_move_view.xml',
         'views/account_payment_register.xml',
+        'wizard/mollie_sync_wizard.xml'
     ],
 
     'assets': {

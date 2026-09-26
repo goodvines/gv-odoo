@@ -13,11 +13,12 @@ class AccountPaymentMethod(models.Model):
 
         method_codes = self.env['payment.provider'].sudo()._get_all_mollie_methods_codes()
         for mollie_method_code in method_codes:
-            res[f'mollie_{mollie_method_code}'] = {'mode': 'unique', 'domain': [('type', '=', 'bank')]}
+            res[f'mollie_{mollie_method_code}'] = {'mode': 'unique', 'type': ('bank',)}
         return res
 
 
 class AccountPayment(models.Model):
     _inherit = 'account.payment'
 
+    # TODO: Deprecated field, not used anywhere, remove in future
     mollie_refund_reference = fields.Char()

@@ -2,25 +2,38 @@
 
 import { _t } from "@web/core/l10n/translation";
 import { loadJS } from "@web/core/assets";
-import paymentForm from '@payment/js/payment_form';
-import QrDialog from '@payment_mollie_official/js/qr_dialog';
+import { patch } from '@web/core/utils/patch';
+import { patchDynamicContent } from '@web/public/utils';
+import { PaymentForm } from '@payment/interactions/payment_form';
+import { QrDialog } from '@payment_mollie_official/js/qr_dialog';
+import { jsToPyLocale } from "@web/core/l10n/utils";
 
-paymentForm.include({
 
-    events: Object.assign({}, paymentForm.prototype.events, {
-        'click .o_mollie_issuer': '_onClickIssuer',
-        'change input[name="mollieCardType"]': '_onChangeCardType',
-    }),
+patch(PaymentForm.prototype, {
+    setup() {
+        super.setup();
+        patchDynamicContent(this.dynamicContent, {
+            '.o_mollie_issuer': {
+                't-on-click': this._onClickIssuer.bind(this),
+            },
+        });
+    },
 
-    /**
-     * @override
-     */
-    start: function () {
+    // /**
+    //  * @override
+    //  */
+    async willStart() {
         // Show apple pay option only for apple devices
         if (!(window.ApplePaySession && window.ApplePaySession.canMakePayments())) {
-            this.$('input[data-payment-method-code="apple_pay"]').closest('li[name="o_payment_option"]').remove();
+            const applePayInput = this.el.querySelector('input[data-payment-method-code="apple_pay"]');
+            if (applePayInput) {
+                const parentLi = applePayInput.closest('li[name="o_payment_option"]');
+                if (parentLi) {
+                    parentLi.remove();
+                }
+            }
         }
-        return this._super.apply(this, arguments);
+        return await super.willStart();
     },
 
     /**
@@ -37,19 +50,15 @@ paymentForm.include({
      */
     async _prepareInlineForm(providerId, providerCode, paymentOptionId, paymentMethodCode, flow) {
         if (providerCode !== 'mollie' || paymentMethodCode !== 'card') {
-            this._super(...arguments);
+            await super._prepareInlineForm(...arguments);
             return;
         }
-        let $creditCardContainer = this.$("#o_mollie_component");
-        if (!$creditCardContainer.length || this.mollieComponentLoaded) {
-            return this._super(...arguments);
+        let creditCardContainer = this.el.querySelector("#o_mollie_component");
+        if (!creditCardContainer || this.mollieComponentLoaded) {
+            await super._prepareInlineForm(...arguments);
+            return;
         }
-        const checkedRadio = this.el.querySelector('input[name="o_payment_radio"]:checked');
-        const inlineForm = this._getInlineForm(checkedRadio);
-        const useSavedCard = inlineForm.querySelector('#mollieSavedCard')?.checked;
-        if (!useSavedCard) {
-            await this._setupMollieComponent();
-        }
+        await this._setupMollieComponent();
     },
 
     /**
@@ -61,16 +70,11 @@ paymentForm.include({
         this.mollieComponentLoaded = true;
         await loadJS('https://js.mollie.com/v1/mollie.js');
 
-        const mollieProfileId = this.$('#o_mollie_component').data('profile_id');
-        const mollieTestMode = this.$('#o_mollie_component').data('mode') === 'test';
-
-        let context;
-        this.trigger_up('context_get', {
-            callback: function (ctx) {
-                context = ctx;
-            },
-        });
-        const lang = context.lang || 'en_US';
+        const mollieElem = this.el.querySelector('#o_mollie_component');
+        const mollieInfo = mollieElem.dataset;
+        const mollieProfileId = mollieInfo ? mollieInfo.profile_id : null;
+        const mollieTestMode = mollieInfo ? mollieInfo.mode === 'test' : false;
+        const lang = jsToPyLocale(document.documentElement.getAttribute("lang")) || 'en_US';
         this.mollieComponent = Mollie(mollieProfileId, { locale: lang, testmode: mollieTestMode });
         this._createMollieComponent('cardHolder', '#mollie-card-holder');
         this._createMollieComponent('cardNumber', '#mollie-card-number');
@@ -88,31 +92,37 @@ paymentForm.include({
     _createMollieComponent: function (type, componentId) {
         let component = this.mollieComponent.createComponent(type);
         component.mount(componentId);
-
-        let $componentError = this.$(`${componentId}-error`);
+        let componentError = document.querySelector(`${componentId}-error`);
         component.addEventListener('change', function (ev) {
+            if (!componentError) {
+                return;
+            }
             if (ev.error && ev.touched) {
-                $componentError.text(ev.error);
+                componentError.textContent = ev.error;
             } else {
-                $componentError.text('');
+                componentError.textContent = '';
             }
         });
     },
 
     async _initiatePaymentFlow(providerCode, paymentOptionId, paymentMethodCode, flow) {
-        this._mollieCardToken = false;
-        const _super = this._super.bind(this);
-
-        // TODO: put next 3 lines function (it keeps repeating)
-        const checkedRadio = this.el.querySelector('input[name="o_payment_radio"]:checked');
-        const inlineForm = this._getInlineForm(checkedRadio);
-        const useSavedCard = inlineForm.querySelector('#mollieSavedCard')?.checked;
-
-        if (providerCode === 'mollie' && paymentMethodCode === 'card' && this.mollieComponentLoaded && !useSavedCard) {
-            this._mollieCardToken = await this._prepareMollieCardToken();
-            // TODO: What if there no token
+        let hasMollieCreditCardContainer = this.el.querySelector("#o_mollie_component");
+        if (providerCode !== 'mollie' || paymentMethodCode !== 'card' || !hasMollieCreditCardContainer) {
+            // Tokens are handled by the generic flow
+            await super._initiatePaymentFlow(...arguments);
+            return;
         }
-        await _super(...arguments);
+
+        this._mollieCardToken = false;
+
+        if (this.mollieComponentLoaded) {
+            this._mollieCardToken = await this._prepareMollieCardToken();
+        }
+
+        if (!this._mollieCardToken) {
+            return; // Error already displayed in _prepareMollieCardToken
+        }
+        await super._initiatePaymentFlow(...arguments);
         return;
     },
 
@@ -139,32 +149,22 @@ paymentForm.include({
     //  * @return {object} The transaction route params.
     //  */
     _prepareTransactionRouteParams() {
-        const transactionRouteParams = this._super(...arguments);
+        const transactionRouteParams = super._prepareTransactionRouteParams(...arguments);
         const paymentContext = this.paymentContext;
         const checkedRadio = this.el.querySelector('input[name="o_payment_radio"]:checked');
         const inlineForm = this._getInlineForm(checkedRadio);
 
         if (paymentContext.providerCode === 'mollie') {
-
-            if (paymentContext.paymentMethodCode === 'card') {
-                const useSavedCard = inlineForm.querySelector('#mollieSavedCard')?.checked;
-
-                if(this._mollieCardToken && !useSavedCard) {
-                    transactionRouteParams['mollie_card_token'] = this._mollieCardToken;
-                }
-
-                if (inlineForm.querySelector('input[name="o_mollie_save_card"]') || useSavedCard) {
-                    transactionRouteParams['mollie_save_card'] = inlineForm.querySelector('input[name="o_mollie_save_card"]').checked || useSavedCard;
-                }
-
+            if (this._mollieCardToken && paymentContext.paymentMethodCode === 'card') {
+                transactionRouteParams['mollie_card_token'] = this._mollieCardToken;
             }
-            const activeIssuer = inlineForm.querySelector('.o_mollie_issuer.active')
-            if (activeIssuer) {
-                transactionRouteParams['mollie_payment_issuer'] = inlineForm.querySelector('.o_mollie_issuer.active').dataset.mollieIssuer;
+            if (inlineForm){
+                const activeIssuer = inlineForm.querySelector('.o_mollie_issuer.active')
+                if (activeIssuer) {
+                    transactionRouteParams['mollie_payment_issuer'] = inlineForm.querySelector('.o_mollie_issuer.active').dataset.mollieIssuer;
+                }
             }
-
         }
-
         return transactionRouteParams;
     },
 
@@ -176,19 +176,6 @@ paymentForm.include({
         let $container = $(ev.currentTarget).closest('.o_mollie_issuer_container');
         $container.find('.o_mollie_issuer').removeClass('active border-primary');
         $(ev.currentTarget).addClass('active border-primary');
-    },
-
-    /**
-     * @private
-     * @param {MouseEvent} ev
-     */
-    _onChangeCardType: function (ev) {
-        this.$('#o_mollie_component').toggleClass('d-none', $(ev.currentTarget).val() !== 'component');
-        this.$('#o_mollie_save_card').toggleClass('d-none', $(ev.currentTarget).val() !== 'component');
-
-        if ($(ev.currentTarget).val() == 'component' && !this.mollieComponentLoaded) {
-            this._setupMollieComponent();
-        }
     },
 
     /**
@@ -207,19 +194,13 @@ paymentForm.include({
         );
         var qrImgSrc = $redirectForm.data('qrsrc');
         if (qrImgSrc) {
-            var dialog = new QrDialog(this, {
+            this.services.dialog.add(QrDialog, {
                 qrImgSrc: qrImgSrc,
-                submitRedirectForm: this._super.bind(this, ...arguments),
-                size: 'small',
-                title: _t('Scan QR'),
-                renderFooter: false
+                submitRedirectForm: () => super._processRedirectFlow(...arguments),
             });
-            dialog.opened().then(() => {
-                this._enableButton();
-            });
-            dialog.open();
+            this._enableButton();
         } else {
-            return this._super(...arguments);
+            return super._processRedirectFlow(...arguments);
         }
     },
 
