@@ -396,6 +396,7 @@ class PaymentTransaction(models.Model):
             if (line.product_id and 'website_url' in line.product_id._fields and line.product_id.website_url):
                 base_url = self.get_base_url()
                 product_url = urls.url_join(base_url, line.product_id.website_url)
+                _logger.info("product_url %s:",product_url)
                 _logger.info("line data %s:",line)
                 if product_url and product_url.startswith(('http://', 'https://')):
                     line['productUrl'] = product_url
