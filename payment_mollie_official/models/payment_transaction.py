@@ -400,7 +400,7 @@ class PaymentTransaction(models.Model):
                 _logger.info("line data %s:",line)
                 if product_url and product_url.startswith(('http://', 'https://')):
                     _logger.info("line data %s:",line)
-                    # line_data['productUrl'] = product_url
+                    line_data['productUrl'] = product_url
 
             if self.payment_method_id.code == 'voucher':
                 category = line.product_id.product_tmpl_id._get_mollie_voucher_category()
@@ -462,7 +462,7 @@ class PaymentTransaction(models.Model):
                 base_url = self.get_base_url()
                 product_url = urls.url_join(base_url, line.product_id.website_url)
                 if product_url and product_url.startswith(('http://', 'https://')):
-                    # line_data['productUrl'] = product_url
+                    line_data['productUrl'] = product_url
                     _logger.info("line data 2 %s:",line)
 
 
